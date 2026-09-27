@@ -553,3 +553,61 @@ export function getSapIdentity() {
   const sap = config();
   return { caja: sap.cajaId, cajaLabel: getCajaLabel(), usuario: sap.userName || "", companyDb: sap.companyDb || "" };
 }
+
+export type ReceiptData = {
+  invoiceDocNum: number;
+  docDate: string;
+  cardCode: string;
+  cardName: string;
+  currency: string;
+  subtotal: number;
+  vat: number;
+  total: number;
+  taxRate: number;
+  cancelled: boolean;
+  lines: Array<{ code: string; name: string; qty: number; unit: number; total: number }>;
+  payment: { docNum: number; cash: number; card: number; cancelled: boolean } | null;
+};
+
+// El recibo se arma con lo que SAP registró (no con lo que envió el navegador).
+export async function getReceiptData(invoiceDocEntry: number, paymentDocEntry: number | null): Promise<ReceiptData> {
+  const sap = config();
+  const session = await login();
+  const headers = { Cookie: session.cookie, Accept: "application/json" };
+  const invoiceResponse = await sapFetch(`${sap.baseUrl}/Invoices(${invoiceDocEntry})?$select=DocNum,DocDate,CardCode,CardName,DocCurrency,DocTotal,VatSum,Cancelled,DocumentLines`, { headers, cache: "no-store" });
+  if (!invoiceResponse.ok) throw new Error(`No fue posible leer la factura ${invoiceDocEntry} en SAP: ${await errorMessage(invoiceResponse)}`);
+  const invoice = await invoiceResponse.json() as {
+    DocNum: number; DocDate: string; CardCode: string; CardName?: string; DocCurrency: string; DocTotal: number; VatSum: number; Cancelled?: string;
+    DocumentLines?: Array<{ ItemCode: string; ItemDescription?: string; Quantity: number; LineTotal?: number; TaxTotal?: number }>;
+  };
+  let payment: ReceiptData["payment"] = null;
+  if (paymentDocEntry) {
+    const paymentResponse = await sapFetch(`${sap.baseUrl}/IncomingPayments(${paymentDocEntry})?$select=DocNum,CashSum,Cancelled,PaymentCreditCards`, { headers, cache: "no-store" });
+    if (!paymentResponse.ok) throw new Error(`No fue posible leer el pago ${paymentDocEntry} en SAP: ${await errorMessage(paymentResponse)}`);
+    const data = await paymentResponse.json() as { DocNum: number; CashSum?: number; Cancelled?: string; PaymentCreditCards?: Array<{ CreditSum?: number }> };
+    payment = {
+      docNum: data.DocNum,
+      cash: Number(data.CashSum || 0),
+      card: (data.PaymentCreditCards || []).reduce((sum, row) => sum + Number(row.CreditSum || 0), 0),
+      cancelled: data.Cancelled === "tYES",
+    };
+  }
+  return {
+    invoiceDocNum: invoice.DocNum,
+    docDate: invoice.DocDate,
+    cardCode: invoice.CardCode,
+    cardName: invoice.CardName || "",
+    currency: invoice.DocCurrency,
+    subtotal: Math.round((invoice.DocTotal - invoice.VatSum) * 100) / 100,
+    vat: invoice.VatSum,
+    total: invoice.DocTotal,
+    taxRate: sap.taxRate,
+    cancelled: invoice.Cancelled === "tYES",
+    // LineTotal y TaxTotal vienen en la moneda del documento (C$); PriceAfterVAT/GrossTotal pueden venir en la moneda del artículo.
+    lines: (invoice.DocumentLines || []).map((line) => {
+      const total = Math.round((Number(line.LineTotal || 0) + Number(line.TaxTotal || 0)) * 100) / 100;
+      return { code: line.ItemCode, name: line.ItemDescription || line.ItemCode, qty: line.Quantity, unit: line.Quantity ? Math.round((total / line.Quantity) * 100) / 100 : total, total };
+    }),
+    payment,
+  };
+}

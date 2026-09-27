@@ -41,6 +41,7 @@ export default function Registro() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
 
   const loadList = useCallback(async (day: string) => {
     setRows(null); setListError(null);
@@ -53,7 +54,7 @@ export default function Registro() {
   }, []);
 
   const loadDetail = useCallback(async (id: string) => {
-    setSelectedId(id); setDetail(null); setDetailError(null);
+    setSelectedId(id); setDetail(null); setDetailError(null); setReceiptError(null);
     try {
       const response = await fetch("/api/operaciones/" + encodeURIComponent(id), { cache: "no-store" });
       const data = await response.json() as Detail & { message?: string };
@@ -72,6 +73,22 @@ export default function Registro() {
   function select(id: string) {
     window.history.replaceState(null, "", "/registro?id=" + encodeURIComponent(id));
     loadDetail(id);
+  }
+
+  // Reimpresión: el servidor arma el recibo con la factura y el pago que están en SAP.
+  async function downloadReceipt(operation: Detail) {
+    setReceiptError(null);
+    const response = await fetch("/api/receipt/pdf", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operationId: operation.id }) });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({})) as { message?: string };
+      setReceiptError(data.message || "No fue posible generar el recibo.");
+      return;
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url; link.download = "recibo-comtech-" + (operation.facturaDocNum ?? operation.id) + "-80mm.pdf";
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
   const counts = (rows || []).reduce<Record<string, number>>((acc, row) => ({ ...acc, [row.estado]: (acc[row.estado] || 0) + 1 }), {});
@@ -124,6 +141,8 @@ export default function Registro() {
               <div><dt>Base SAP</dt><dd>{detail.companyDb}</dd></div>
               <div><dt>ID de operación</dt><dd><small>{detail.id}</small></dd></div>
             </dl>
+            {detail.facturaDocEntry ? <button className="secondary-print" onClick={() => downloadReceipt(detail)}>Descargar recibo PDF</button> : null}
+            {receiptError ? <p className="payment-inline-error" role="alert">{receiptError}</p> : null}
 
             {detail.lineas?.length ? <>
               <h3>Artículos</h3>

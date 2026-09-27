@@ -22,6 +22,7 @@ export default function Home() {
   const [invoice, setInvoice] = useState<{ DocEntry?: number; DocNum?: number } | null>(null);
   const [payment, setPayment] = useState<{ DocEntry?: number; DocNum?: number } | null>(null);
   const [operation, setOperation] = useState<SaleOperation | null>(null);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [printed, setPrinted] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("card");
@@ -153,7 +154,7 @@ export default function Home() {
   function reset() {
     if (printFrame.current) { printFrame.current.onload = null; printFrame.current.src = "about:blank"; }
     lastSimulatedCode.current = null;
-    setLines([]); setCode(""); setModal(null); setInvoice(null); setPayment(null); setOperation(null); setPaymentError(null); setPaymentMethod("card"); setMixedCash(""); setStep(0); setPrinted(false); setNotice("Listo para escanear");
+    setLines([]); setCode(""); setModal(null); setInvoice(null); setPayment(null); setOperation(null); setReceiptError(null); setPaymentError(null); setPaymentMethod("card"); setMixedCash(""); setStep(0); setPrinted(false); setNotice("Listo para escanear");
     setTimeout(() => input.current?.focus(), 0);
   }
 
@@ -178,9 +179,16 @@ export default function Home() {
     } catch (error) { setClosureError(error instanceof Error ? error.message : "No fue posible cargar el cierre"); }
   }
 
-  async function printReceiptPdf(invoiceData = invoice, paymentData = payment) {
-    const response = await fetch("/api/receipt/pdf", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ invoice: invoiceData?.DocNum ? `SAP-${invoiceData.DocNum}` : "FACTURA SAP", authorization: paymentData?.DocNum ? String(paymentData.DocNum) : "846291", lines: lines.map((line) => ({ code: line.itemCode || line.code, name: line.name, qty: line.qty, price: line.price })) }) });
-    if (!response.ok) { setNotice("No fue posible generar el PDF"); return; }
+  // El recibo se genera en el servidor con los datos de la factura y el pago en SAP.
+  async function printReceiptPdf(invoiceData = invoice) {
+    setReceiptError(null);
+    if (!operation?.id) { setReceiptError("No hay una operación registrada para imprimir."); return; }
+    const response = await fetch("/api/receipt/pdf", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operationId: operation.id }) });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({})) as { message?: string };
+      setReceiptError(result.message || "No fue posible generar el recibo.");
+      return;
+    }
     setPrinted(true);
     const url = URL.createObjectURL(await response.blob());
     const download = document.createElement("a");
@@ -255,7 +263,7 @@ export default function Home() {
           <button className="pay confirm-payment" onClick={beginPayment}><span>Registrar {paymentMethod === "cash" ? "contado" : paymentMethod === "card" ? "tarjeta" : "pago combinado"}</span><i>→</i></button><button className="link" onClick={() => setModal(null)}>Volver a la venta</button><button className="cancel-modal" onClick={reset}>Cancelar venta</button>
         </>}
         {modal === "processing" && <><div className={paymentError ? "process-error" : "spinner"}>{paymentError ? "!" : ""}</div><p className="eyebrow center">{paymentError ? "OPERACIÓN INCOMPLETA" : "PROCESANDO VENTA"}</p><h2>{paymentError ? "SAP requiere atención" : "Espera la confirmación"}</h2>{paymentError ? <><p className="muted">{paymentError}</p>{operation?.id ? <a className="log-link" href={`/registro?id=${operation.id}`} target="_blank" rel="noopener">Ver detalle en el registro</a> : null}<button className="secondary-print" onClick={() => invoice ? reset() : setModal("pay")}>{invoice ? "Cerrar sin duplicar factura" : "Volver y revisar"}</button>{!invoice && <button className="cancel-modal" onClick={reset}>Cancelar venta</button>}</> : <div className="progress-list">{["Validando productos", "Creando factura de reserva en SAP", "Registrando el medio de pago", "Confirmando la operación"].map((label, i) => <p className={step > i ? "done" : step === i ? "active" : ""} key={label}><i>{step > i ? "✓" : i + 1}</i><span>{label}</span></p>)}</div>}</>}
-        {modal === "done" && <><div className="success">✓</div><p className="eyebrow center">VENTA COMPLETADA</p><h2>Pago registrado</h2><div className="pos-voucher"><div><b>FORMA DE PAGO</b><span>{paymentMethod === "cash" ? "CONTADO" : paymentMethod === "card" ? "TARJETA" : "AMBOS"}</span></div><p><span>PAGO SAP {payment?.DocNum || "-"}</span><strong>{money.format(total)}</strong></p><small>REGISTRADO EN {operation?.companyDb || "SAP"}</small></div><dl className="sale-details"><div><dt>Factura SAP</dt><dd>{invoice?.DocNum ?? "-"} <small>DocEntry {invoice?.DocEntry ?? "-"}</small></dd></div><div><dt>Pago SAP</dt><dd>{payment?.DocNum ?? "-"} <small>DocEntry {payment?.DocEntry ?? "-"}</small></dd></div><div><dt>Caja</dt><dd>{operation?.cajaLabel || cajaLabel}</dd></div><div><dt>Usuario SAP</dt><dd>{operation?.usuario || "-"}</dd></div><div><dt>Total SAP</dt><dd>{money.format(operation?.docTotal ?? total)}</dd></div>{operation?.cashAmount ? <div><dt>Efectivo</dt><dd>{money.format(operation.cashAmount)}</dd></div> : null}{operation?.cardAmount ? <div><dt>Tarjeta</dt><dd>{money.format(operation.cardAmount)}</dd></div> : null}<div><dt>Fecha y hora</dt><dd>{operation?.createdAt ? new Date(operation.createdAt).toLocaleString("es-NI", { timeZone: "America/Managua" }) : "-"}</dd></div></dl>{operation?.id ? <a className="log-link" href={`/registro?id=${operation.id}`} target="_blank" rel="noopener">Ver detalle en el registro</a> : null}<div className="receipt"><span>Factura de reserva SAP · SHOWROOM</span><b>{invoice?.DocNum ? `SAP-${invoice.DocNum}` : "FACTURA DE RESERVA"}</b><small>{printed ? "Factura enviada a impresión" : "Pendiente de imprimir y entregar"}</small></div><button className="pay print-action" onClick={() => printReceiptPdf()}><span>{printed ? "Imprimir nuevamente" : "Imprimir factura"}</span><i>▣</i></button><p className="handoff-note">{printed ? "Entrega la factura y los productos al cliente." : "Imprime la factura antes de entregar los productos."}</p><button className="link" onClick={reset}>Iniciar nueva venta</button></>}
+        {modal === "done" && <><div className="success">✓</div><p className="eyebrow center">VENTA COMPLETADA</p><h2>Pago registrado</h2><div className="pos-voucher"><div><b>FORMA DE PAGO</b><span>{paymentMethod === "cash" ? "CONTADO" : paymentMethod === "card" ? "TARJETA" : "AMBOS"}</span></div><p><span>PAGO SAP {payment?.DocNum || "-"}</span><strong>{money.format(total)}</strong></p><small>REGISTRADO EN {operation?.companyDb || "SAP"}</small></div><dl className="sale-details"><div><dt>Factura SAP</dt><dd>{invoice?.DocNum ?? "-"} <small>DocEntry {invoice?.DocEntry ?? "-"}</small></dd></div><div><dt>Pago SAP</dt><dd>{payment?.DocNum ?? "-"} <small>DocEntry {payment?.DocEntry ?? "-"}</small></dd></div><div><dt>Caja</dt><dd>{operation?.cajaLabel || cajaLabel}</dd></div><div><dt>Usuario SAP</dt><dd>{operation?.usuario || "-"}</dd></div><div><dt>Total SAP</dt><dd>{money.format(operation?.docTotal ?? total)}</dd></div>{operation?.cashAmount ? <div><dt>Efectivo</dt><dd>{money.format(operation.cashAmount)}</dd></div> : null}{operation?.cardAmount ? <div><dt>Tarjeta</dt><dd>{money.format(operation.cardAmount)}</dd></div> : null}<div><dt>Fecha y hora</dt><dd>{operation?.createdAt ? new Date(operation.createdAt).toLocaleString("es-NI", { timeZone: "America/Managua" }) : "-"}</dd></div></dl>{operation?.id ? <a className="log-link" href={`/registro?id=${operation.id}`} target="_blank" rel="noopener">Ver detalle en el registro</a> : null}<div className="receipt"><span>Factura de reserva SAP · SHOWROOM</span><b>{invoice?.DocNum ? `SAP-${invoice.DocNum}` : "FACTURA DE RESERVA"}</b><small>{printed ? "Factura enviada a impresión" : "Pendiente de imprimir y entregar"}</small></div><button className="pay print-action" onClick={() => printReceiptPdf()}><span>{printed ? "Imprimir nuevamente" : "Imprimir factura"}</span><i>▣</i></button>{receiptError ? <p className="payment-inline-error" role="alert">{receiptError}</p> : null}<p className="handoff-note">{printed ? "Entrega la factura y los productos al cliente." : "Imprime la factura antes de entregar los productos."}</p><button className="link" onClick={reset}>Iniciar nueva venta</button></>}
         {modal === "closure" && <><button className="modal-x" onClick={() => setModal(null)} aria-label="Cerrar cierre de caja">×</button><p className="eyebrow center">{cajaLabel} · HOY</p><h2>Cierre de caja</h2>{closureError ? <p className="payment-inline-error" role="alert">{closureError}</p> : !closure ? <div className="closure-loading"><div className="spinner" /><span>Consultando pagos en SAP…</span></div> : <><div className="closure-totals"><div><span>Contado</span><b>{money.format(closure.totals.cash)}</b></div><div><span>Tarjeta</span><b>{money.format(closure.totals.card)}</b></div><div className="closure-grand"><span>Total vendido</span><b>{money.format(closure.totals.total)}</b></div></div><div className="closure-meta"><span>{closure.entries.length} facturas</span><span>{closure.date}</span></div><div className="closure-list">{closure.entries.length ? closure.entries.map((entry) => <div key={entry.paymentDocNum}><span><b>Factura {entry.invoiceDocNum || "-"}</b><small>Pago SAP {entry.paymentDocNum} · {entry.method === "cash" ? "Contado" : entry.method === "card" ? "Tarjeta" : "Ambos"}</small></span><strong>{money.format(entry.total)}</strong></div>) : <p>No hay ventas registradas hoy en {cajaLabel}.</p>}</div></>}<button className="link" onClick={() => setModal(null)}>Volver a la caja</button></>}
       </div></div>}
 
@@ -269,7 +277,7 @@ export default function Home() {
         <p>Documento de venta</p>
         <div className="thermal-rule" />
         <div className="thermal-pair"><span>FACTURA RESERVA</span><b>{invoice?.DocNum ? `SAP-${invoice.DocNum}` : "FACTURA SAP"}</b></div>
-        <div className="thermal-pair"><span>FECHA</span><span>03/08/2026 10:42 AM</span></div>
+        <div className="thermal-pair"><span>FECHA</span><span>{operation?.createdAt ? new Date(operation.createdAt).toLocaleString("es-NI", { timeZone: "America/Managua" }) : "-"}</span></div>
         <div className="thermal-pair"><span>CAJA</span><span>{cajaLabel}</span></div>
         <div className="thermal-pair"><span>CLIENTE</span><span>CN999999</span></div>
         <div className="thermal-rule" />
