@@ -1,3 +1,5 @@
+import type { OperationTrace } from "./operations";
+
 type SapSession = { cookie: string };
 type SaleLine = { itemCode: string; quantity: number };
 export type PaymentMethod = "cash" | "card" | "mixed";
@@ -14,7 +16,7 @@ let priceListCache: { value: number; expiresAt: number } | null = null;
 let priceListRequest: Promise<number> | null = null;
 const currencyRateRequests = new Map<string, Promise<number>>();
 
-function showroomDate() {
+export function showroomDate() {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Managua", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${value.year}-${value.month}-${value.day}`;
@@ -96,7 +98,7 @@ async function assertReserveInvoiceSeries(session: SapSession) {
     cache: "no-store",
   });
   if (!response.ok) {
-    throw new Error("SAP no tiene una serie de numeración configurada para Factura de reserva. Créela en Administración → Inicialización del sistema → Numeración de documentos y asígnela a Factura de clientes de reserva.");
+    throw new Error(`SAP no tiene una serie de numeración configurada para Factura de reserva. Créela en Administración → Inicialización del sistema → Numeración de documentos y asígnela a Factura de clientes de reserva. (SAP: ${await errorMessage(response)})`);
   }
 }
 
@@ -312,12 +314,18 @@ export async function listSellableItems(limit = 6) {
   })).then((result) => result.filter(Boolean).slice(0, limit));
 }
 
-export async function createInvoice(lines: SaleLine[], existingSession?: SapSession) {
+export async function createInvoice(lines: SaleLine[], existingSession?: SapSession, trace?: OperationTrace) {
   assertValidSaleLines(lines);
   assertDemoWriteTarget();
   const sap = config();
   const session = existingSession ?? await login();
-  await assertReserveInvoiceSeries(session);
+  try {
+    await assertReserveInvoiceSeries(session);
+    trace?.step("Serie de factura de reserva", "ok", "SAP tiene serie de numeración para factura de reserva.");
+  } catch (error) {
+    trace?.step("Serie de factura de reserva", "error", error instanceof Error ? error.message : String(error));
+    throw error;
+  }
   const documentLines = await Promise.all(lines.map(async (line) => {
     const code = line.itemCode.replace(/'/g, "''");
     const itemResponse = await sapFetch(`${sap.baseUrl}/Items('${encodeURIComponent(code)}')?$select=ItemCode,ManageSerialNumbers`, {
@@ -358,20 +366,30 @@ export async function createInvoice(lines: SaleLine[], existingSession?: SapSess
       ...(SerialNumbers ? { SerialNumbers } : {}),
     };
   }));
+  const invoicePayload = {
+    CardCode: sap.customer,
+    DocCurrency: sap.documentCurrency,
+    Series: sap.invoiceSeries,
+    ReserveInvoice: "tYES",
+    DocumentLines: documentLines,
+    Comments: `Factura de reserva · ${getCajaLabel()} Showroom · pago confirmado por POS`,
+  };
   const response = await sapFetch(`${sap.baseUrl}/Invoices`, {
     method: "POST",
     headers: { Cookie: session.cookie, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      CardCode: sap.customer,
-      DocCurrency: sap.documentCurrency,
-      Series: sap.invoiceSeries,
-      ReserveInvoice: "tYES",
-      DocumentLines: documentLines,
-      Comments: `Factura de reserva · ${getCajaLabel()} Showroom · pago confirmado por POS`,
-    }),
+    body: JSON.stringify(invoicePayload),
   });
-  if (!response.ok) throw new Error(await errorMessage(response));
-  return response.json();
+  if (!response.ok) {
+    const message = await errorMessage(response);
+    trace?.step("Factura de reserva", "error", `SAP rechazó la factura (HTTP ${response.status}): ${message}`, { request: invoicePayload, response: { status: response.status, message } });
+    throw new Error(message);
+  }
+  const invoice = await response.json() as { DocEntry: number; DocNum: number; DocTotal: number; DocCurrency: string };
+  trace?.step("Factura de reserva", "ok", `Factura de reserva SAP ${invoice.DocNum} creada (DocEntry ${invoice.DocEntry}).`, {
+    request: invoicePayload,
+    response: { status: response.status, DocEntry: invoice.DocEntry, DocNum: invoice.DocNum, DocTotal: invoice.DocTotal, DocCurrency: invoice.DocCurrency },
+  });
+  return invoice;
 }
 
 export async function validateSaleLines(lines: SaleLine[], existingSession?: SapSession) {
@@ -406,7 +424,7 @@ export async function validateSaleLines(lines: SaleLine[], existingSession?: Sap
   return { valid: true };
 }
 
-export async function createInvoiceAndPayment(lines: SaleLine[], paymentSelection: PaymentSelection) {
+export async function createInvoiceAndPayment(lines: SaleLine[], paymentSelection: PaymentSelection, trace?: OperationTrace) {
   assertValidSaleLines(lines);
   assertDemoWriteTarget();
   if (!paymentSelection || !["cash", "card", "mixed"].includes(paymentSelection.method)) {
@@ -417,8 +435,20 @@ export async function createInvoiceAndPayment(lines: SaleLine[], paymentSelectio
   }
   const sap = config();
   const session = await login();
-  await validateSaleLines(lines, session);
-  const invoice = await createInvoice(lines, session) as { DocEntry: number; DocNum: number; DocTotal: number; DocCurrency: string };
+  try {
+    await validateSaleLines(lines, session);
+    trace?.step("Validación de artículos", "ok", `${lines.length} artículo(s) con existencia en ${sap.warehouse}.`, { request: lines });
+  } catch (error) {
+    trace?.step("Validación de artículos", "error", error instanceof Error ? error.message : String(error), { request: lines });
+    throw error;
+  }
+  let invoice: { DocEntry: number; DocNum: number; DocTotal: number; DocCurrency: string };
+  try {
+    invoice = await createInvoice(lines, session, trace);
+  } catch (error) {
+    if (!trace?.steps.some((step) => step.status === "error")) trace?.step("Factura de reserva", "error", error instanceof Error ? error.message : String(error));
+    throw error;
+  }
   const invoiceSummary = { DocEntry: invoice.DocEntry, DocNum: invoice.DocNum, DocTotal: invoice.DocTotal, DocCurrency: invoice.DocCurrency };
   const today = showroomDate();
   const voucher = `${sap.cajaId}-${invoice.DocNum}`;
@@ -428,6 +458,7 @@ export async function createInvoiceAndPayment(lines: SaleLine[], paymentSelectio
       ? Math.round((paymentSelection.cashAmount || 0) * 100) / 100
       : 0;
   if (paymentSelection.method === "mixed" && cashAmount >= invoice.DocTotal) {
+    trace?.step("Pago recibido", "error", "En pago combinado, el efectivo debe ser menor que el total de la factura.");
     return { invoice: invoiceSummary, payment: null, paymentError: "En pago combinado, el efectivo debe ser menor que el total de la factura." };
   }
   const cardAmount = Math.round((invoice.DocTotal - cashAmount) * 100) / 100;
@@ -440,24 +471,30 @@ export async function createInvoiceAndPayment(lines: SaleLine[], paymentSelectio
     CreditCur: sap.documentCurrency, CreditRate: 0, NumOfCreditPayments: 1,
     CreditType: "cr_Regular", SplitPayments: "tNO"
   }] : undefined;
+  const paymentPayload = {
+    DocType: "rCustomer",
+    CardCode: sap.customer,
+    DocCurrency: sap.documentCurrency,
+    Remarks: `${sap.cajaId}|${methodCode}|INV:${invoice.DocNum}`,
+    PaymentInvoices: [{ DocEntry: invoice.DocEntry, InvoiceType: "it_Invoice", SumApplied: invoice.DocTotal }],
+    ...(cashAmount > 0 ? { CashAccount: sap.cashAccount, CashSum: cashAmount } : {}),
+    ...(paymentCreditCards ? { PaymentCreditCards: paymentCreditCards } : {}),
+  };
   const response = await sapFetch(`${sap.baseUrl}/IncomingPayments`, {
     method: "POST",
     headers: { Cookie: session.cookie, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      DocType: "rCustomer",
-      CardCode: sap.customer,
-      DocCurrency: sap.documentCurrency,
-      Remarks: `${sap.cajaId}|${methodCode}|INV:${invoice.DocNum}`,
-      PaymentInvoices: [{ DocEntry: invoice.DocEntry, InvoiceType: "it_Invoice", SumApplied: invoice.DocTotal }],
-      ...(cashAmount > 0 ? { CashAccount: sap.cashAccount, CashSum: cashAmount } : {}),
-      ...(paymentCreditCards ? { PaymentCreditCards: paymentCreditCards } : {}),
-    }),
+    body: JSON.stringify(paymentPayload),
   });
   if (!response.ok) {
     const message = await errorMessage(response);
-    return { invoice: invoiceSummary, payment: null, paymentError: message };
+    trace?.step("Pago recibido", "error", `SAP rechazó el pago (HTTP ${response.status}): ${message}`, { request: paymentPayload, response: { status: response.status, message } });
+    return { invoice: invoiceSummary, payment: null, paymentError: message, paymentMethod: paymentSelection.method, cashAmount, cardAmount };
   }
   const payment = await response.json() as { DocEntry: number; DocNum: number };
+  trace?.step("Pago recibido", "ok", `Pago recibido SAP ${payment.DocNum} aplicado a la factura ${invoice.DocNum}.`, {
+    request: paymentPayload,
+    response: { status: response.status, DocEntry: payment.DocEntry, DocNum: payment.DocNum },
+  });
   return { invoice: invoiceSummary, payment: { DocEntry: payment.DocEntry, DocNum: payment.DocNum }, paymentError: null, paymentMethod: paymentSelection.method, cashAmount, cardAmount };
 }
 
@@ -483,4 +520,10 @@ export async function getCashClosure(date = showroomDate()) {
     entries,
     totals: entries.reduce((sum, row) => ({ cash: sum.cash + row.cash, card: sum.card + row.card, total: sum.total + row.total }), { cash: 0, card: 0, total: 0 }),
   };
+}
+
+// Datos de la caja y el usuario SAP para registrar y mostrar cada operación.
+export function getSapIdentity() {
+  const sap = config();
+  return { caja: sap.cajaId, cajaLabel: getCajaLabel(), usuario: sap.userName || "", companyDb: sap.companyDb || "" };
 }

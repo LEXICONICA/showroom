@@ -7,6 +7,8 @@ type Line = Product & { qty: number };
 type PaymentMethod = "cash" | "card" | "mixed";
 type ClosureData = { date: string; companyDb: string; entries: Array<{ paymentDocNum: number; invoiceDocNum: number | null; method: PaymentMethod; cash: number; card: number; total: number }>; totals: { cash: number; card: number; total: number } };
 
+type SaleOperation = { id?: string; createdAt?: string; cajaLabel?: string; usuario?: string; companyDb?: string; docTotal?: number; cashAmount?: number; cardAmount?: number };
+
 const money = new Intl.NumberFormat("es-NI", { style: "currency", currency: "NIO" });
 
 export default function Home() {
@@ -19,6 +21,7 @@ export default function Home() {
   const [sapState, setSapState] = useState<"checking" | "online" | "offline">("checking");
   const [invoice, setInvoice] = useState<{ DocEntry?: number; DocNum?: number } | null>(null);
   const [payment, setPayment] = useState<{ DocEntry?: number; DocNum?: number } | null>(null);
+  const [operation, setOperation] = useState<SaleOperation | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [printed, setPrinted] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("card");
@@ -68,10 +71,11 @@ export default function Home() {
     const processSale = async () => {
       setStep(0); setPaymentError(null);
       await wait(650); if (cancelled) return;
-      const documentLines = lines.map((line) => ({ itemCode: line.itemCode || line.code, quantity: line.qty }));
+      const documentLines = lines.map((line) => ({ itemCode: line.itemCode || line.code, quantity: line.qty, name: line.name, price: line.price }));
       try {
         const validationResponse = await fetch("/api/sap/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lines: documentLines }) });
-        const validation = await validationResponse.json() as { valid?: boolean; message?: string };
+        const validation = await validationResponse.json() as { valid?: boolean; message?: string; operation?: SaleOperation };
+        if (validation.operation) setOperation(validation.operation);
         if (!validationResponse.ok || !validation.valid) throw new Error(validation.message || "La compra contiene artículos no válidos");
       } catch (error) {
         setPaymentError(error instanceof Error ? error.message : "No fue posible validar los artículos"); return;
@@ -80,7 +84,8 @@ export default function Home() {
       await wait(650); if (cancelled) return; setStep(2);
       try {
         const response = await fetch("/api/sap/invoices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lines: documentLines, payment: { method: paymentMethod, ...(paymentMethod === "mixed" ? { cashAmount: Number(mixedCash) } : {}) } }) });
-        const result = await response.json() as { invoice?: { DocEntry?: number; DocNum?: number }; payment?: { DocEntry?: number; DocNum?: number } | null; paymentError?: string | null; message?: string };
+        const result = await response.json() as { invoice?: { DocEntry?: number; DocNum?: number; DocTotal?: number }; payment?: { DocEntry?: number; DocNum?: number } | null; paymentError?: string | null; message?: string; cashAmount?: number; cardAmount?: number; operation?: SaleOperation };
+        setOperation(result.operation ? { ...result.operation, docTotal: result.invoice?.DocTotal, cashAmount: result.cashAmount, cardAmount: result.cardAmount } : null);
         if (!response.ok) {
           if (result.invoice) setInvoice(result.invoice);
           throw new Error(result.invoice ? `Factura de reserva SAP ${result.invoice.DocNum} creada, pero el pago no se aplicó: ${result.paymentError || "error de pago"}` : result.message || "SAP rechazó la factura de reserva");
@@ -148,7 +153,7 @@ export default function Home() {
   function reset() {
     if (printFrame.current) { printFrame.current.onload = null; printFrame.current.src = "about:blank"; }
     lastSimulatedCode.current = null;
-    setLines([]); setCode(""); setModal(null); setInvoice(null); setPayment(null); setPaymentError(null); setPaymentMethod("card"); setMixedCash(""); setStep(0); setPrinted(false); setNotice("Listo para escanear");
+    setLines([]); setCode(""); setModal(null); setInvoice(null); setPayment(null); setOperation(null); setPaymentError(null); setPaymentMethod("card"); setMixedCash(""); setStep(0); setPrinted(false); setNotice("Listo para escanear");
     setTimeout(() => input.current?.focus(), 0);
   }
 
@@ -192,7 +197,7 @@ export default function Home() {
     <main>
       <header>
         <div className="brand"><span className="brand-logo-wrap"><img src="/brand/comtech-logo.jpg" alt="COMTECH" /></span><div><strong>COMTECH</strong><small>SHOWROOM · {cajaLabel}</small></div></div>
-        <div className="header-right"><span className={`status ${sapState === "offline" ? "offline" : ""}`}><i /> {sapState === "online" ? "SAP conectado" : sapState === "offline" ? "SAP sin acceso" : "Verificando SAP"}</span><button className="closure-trigger" onClick={openClosure}>Cierre de caja</button><button className="help" onClick={() => { setNotice("Escanea un producto; luego cobra, imprime y entrega."); input.current?.focus(); }}>? Ayuda</button></div>
+        <div className="header-right"><span className={`status ${sapState === "offline" ? "offline" : ""}`}><i /> {sapState === "online" ? "SAP conectado" : sapState === "offline" ? "SAP sin acceso" : "Verificando SAP"}</span><a className="closure-trigger" href="/registro" target="_blank" rel="noopener">Registro</a><button className="closure-trigger" onClick={openClosure}>Cierre de caja</button><button className="help" onClick={() => { setNotice("Escanea un producto; luego cobra, imprime y entrega."); input.current?.focus(); }}>? Ayuda</button></div>
       </header>
 
       <section className="workspace">
@@ -249,8 +254,8 @@ export default function Home() {
           {paymentError ? <p className="payment-inline-error" role="alert">{paymentError}</p> : null}
           <button className="pay confirm-payment" onClick={beginPayment}><span>Registrar {paymentMethod === "cash" ? "contado" : paymentMethod === "card" ? "tarjeta" : "pago combinado"}</span><i>→</i></button><button className="link" onClick={() => setModal(null)}>Volver a la venta</button><button className="cancel-modal" onClick={reset}>Cancelar venta</button>
         </>}
-        {modal === "processing" && <><div className={paymentError ? "process-error" : "spinner"}>{paymentError ? "!" : ""}</div><p className="eyebrow center">{paymentError ? "OPERACIÓN INCOMPLETA" : "PROCESANDO VENTA"}</p><h2>{paymentError ? "SAP requiere atención" : "Espera la confirmación"}</h2>{paymentError ? <><p className="muted">{paymentError}</p><button className="secondary-print" onClick={() => invoice ? reset() : setModal("pay")}>{invoice ? "Cerrar sin duplicar factura" : "Volver y revisar"}</button>{!invoice && <button className="cancel-modal" onClick={reset}>Cancelar venta</button>}</> : <div className="progress-list">{["Validando productos", "Creando factura de reserva en SAP", "Registrando el medio de pago", "Confirmando la operación"].map((label, i) => <p className={step > i ? "done" : step === i ? "active" : ""} key={label}><i>{step > i ? "✓" : i + 1}</i><span>{label}</span></p>)}</div>}</>}
-        {modal === "done" && <><div className="success">✓</div><p className="eyebrow center">VENTA COMPLETADA</p><h2>Pago registrado</h2><div className="pos-voucher"><div><b>FORMA DE PAGO</b><span>{paymentMethod === "cash" ? "CONTADO" : paymentMethod === "card" ? "TARJETA" : "AMBOS"}</span></div><p><span>PAGO SAP {payment?.DocNum || "-"}</span><strong>{money.format(total)}</strong></p><small>REGISTRADO EN SBO_COMTECH_DEMO</small></div><div className="receipt"><span>Factura de reserva SAP · SHOWROOM</span><b>{invoice?.DocNum ? `SAP-${invoice.DocNum}` : "FACTURA DE RESERVA"}</b><small>{printed ? "Factura enviada a impresión" : "Pendiente de imprimir y entregar"}</small></div><button className="pay print-action" onClick={() => printReceiptPdf()}><span>{printed ? "Imprimir nuevamente" : "Imprimir factura"}</span><i>▣</i></button><p className="handoff-note">{printed ? "Entrega la factura y los productos al cliente." : "Imprime la factura antes de entregar los productos."}</p><button className="link" onClick={reset}>Iniciar nueva venta</button></>}
+        {modal === "processing" && <><div className={paymentError ? "process-error" : "spinner"}>{paymentError ? "!" : ""}</div><p className="eyebrow center">{paymentError ? "OPERACIÓN INCOMPLETA" : "PROCESANDO VENTA"}</p><h2>{paymentError ? "SAP requiere atención" : "Espera la confirmación"}</h2>{paymentError ? <><p className="muted">{paymentError}</p>{operation?.id ? <a className="log-link" href={`/registro?id=${operation.id}`} target="_blank" rel="noopener">Ver detalle en el registro</a> : null}<button className="secondary-print" onClick={() => invoice ? reset() : setModal("pay")}>{invoice ? "Cerrar sin duplicar factura" : "Volver y revisar"}</button>{!invoice && <button className="cancel-modal" onClick={reset}>Cancelar venta</button>}</> : <div className="progress-list">{["Validando productos", "Creando factura de reserva en SAP", "Registrando el medio de pago", "Confirmando la operación"].map((label, i) => <p className={step > i ? "done" : step === i ? "active" : ""} key={label}><i>{step > i ? "✓" : i + 1}</i><span>{label}</span></p>)}</div>}</>}
+        {modal === "done" && <><div className="success">✓</div><p className="eyebrow center">VENTA COMPLETADA</p><h2>Pago registrado</h2><div className="pos-voucher"><div><b>FORMA DE PAGO</b><span>{paymentMethod === "cash" ? "CONTADO" : paymentMethod === "card" ? "TARJETA" : "AMBOS"}</span></div><p><span>PAGO SAP {payment?.DocNum || "-"}</span><strong>{money.format(total)}</strong></p><small>REGISTRADO EN {operation?.companyDb || "SAP"}</small></div><dl className="sale-details"><div><dt>Factura SAP</dt><dd>{invoice?.DocNum ?? "-"} <small>DocEntry {invoice?.DocEntry ?? "-"}</small></dd></div><div><dt>Pago SAP</dt><dd>{payment?.DocNum ?? "-"} <small>DocEntry {payment?.DocEntry ?? "-"}</small></dd></div><div><dt>Caja</dt><dd>{operation?.cajaLabel || cajaLabel}</dd></div><div><dt>Usuario SAP</dt><dd>{operation?.usuario || "-"}</dd></div><div><dt>Total SAP</dt><dd>{money.format(operation?.docTotal ?? total)}</dd></div>{operation?.cashAmount ? <div><dt>Efectivo</dt><dd>{money.format(operation.cashAmount)}</dd></div> : null}{operation?.cardAmount ? <div><dt>Tarjeta</dt><dd>{money.format(operation.cardAmount)}</dd></div> : null}<div><dt>Fecha y hora</dt><dd>{operation?.createdAt ? new Date(operation.createdAt).toLocaleString("es-NI", { timeZone: "America/Managua" }) : "-"}</dd></div></dl>{operation?.id ? <a className="log-link" href={`/registro?id=${operation.id}`} target="_blank" rel="noopener">Ver detalle en el registro</a> : null}<div className="receipt"><span>Factura de reserva SAP · SHOWROOM</span><b>{invoice?.DocNum ? `SAP-${invoice.DocNum}` : "FACTURA DE RESERVA"}</b><small>{printed ? "Factura enviada a impresión" : "Pendiente de imprimir y entregar"}</small></div><button className="pay print-action" onClick={() => printReceiptPdf()}><span>{printed ? "Imprimir nuevamente" : "Imprimir factura"}</span><i>▣</i></button><p className="handoff-note">{printed ? "Entrega la factura y los productos al cliente." : "Imprime la factura antes de entregar los productos."}</p><button className="link" onClick={reset}>Iniciar nueva venta</button></>}
         {modal === "closure" && <><button className="modal-x" onClick={() => setModal(null)} aria-label="Cerrar cierre de caja">×</button><p className="eyebrow center">{cajaLabel} · HOY</p><h2>Cierre de caja</h2>{closureError ? <p className="payment-inline-error" role="alert">{closureError}</p> : !closure ? <div className="closure-loading"><div className="spinner" /><span>Consultando pagos en SAP…</span></div> : <><div className="closure-totals"><div><span>Contado</span><b>{money.format(closure.totals.cash)}</b></div><div><span>Tarjeta</span><b>{money.format(closure.totals.card)}</b></div><div className="closure-grand"><span>Total vendido</span><b>{money.format(closure.totals.total)}</b></div></div><div className="closure-meta"><span>{closure.entries.length} facturas</span><span>{closure.date}</span></div><div className="closure-list">{closure.entries.length ? closure.entries.map((entry) => <div key={entry.paymentDocNum}><span><b>Factura {entry.invoiceDocNum || "-"}</b><small>Pago SAP {entry.paymentDocNum} · {entry.method === "cash" ? "Contado" : entry.method === "card" ? "Tarjeta" : "Ambos"}</small></span><strong>{money.format(entry.total)}</strong></div>) : <p>No hay ventas registradas hoy en {cajaLabel}.</p>}</div></>}<button className="link" onClick={() => setModal(null)}>Volver a la caja</button></>}
       </div></div>}
 
