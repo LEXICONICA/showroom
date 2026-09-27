@@ -39,7 +39,7 @@ export async function POST(request: Request) {
 
 async function buildReceipt(data: ReceiptData, caja: string, createdAt: string) {
   const width = 226.77;
-  const height = 360 + data.lines.length * 44;
+  const height = 370 + data.lines.length * 62;
   const pdf = await PDFDocument.create();
   pdf.setTitle("Recibo SAP-" + data.invoiceDocNum);
   const page = pdf.addPage([width, height]);
@@ -69,7 +69,8 @@ async function buildReceipt(data: ReceiptData, caja: string, createdAt: string) 
   pair("FACTURA RESERVA", "SAP-" + data.invoiceDocNum, 8, bold); y -= 11;
   pair("FECHA", receiptDate(data.docDate, createdAt)); y -= 11;
   pair("CLIENTE", data.cardCode); y -= 11;
-  if (data.cardName) { pair("", data.cardName.slice(0, 34), 7); y -= 11; }
+  if (data.cardName) { pair("", data.cardName.slice(0, 48), 7); y -= 11; }
+  if (data.taxId) { pair("RUC / CEDULA", data.taxId, 7); y -= 11; }
   pair("CAJA", cajaLabel); y -= 14; rule();
   if (data.cancelled) { center("*** FACTURA CANCELADA EN SAP ***", 8, bold); y -= 14; }
 
@@ -79,7 +80,7 @@ async function buildReceipt(data: ReceiptData, caja: string, createdAt: string) 
     for (const word of pdfText(line.qty + " x " + line.name).split(" ")) {
       const current = rows[rows.length - 1];
       if ((current + " " + word).trim().length <= 30) rows[rows.length - 1] = (current + " " + word).trim();
-      else if (rows.length < 3) rows.push(word);
+      else if (rows.length < 5) rows.push(word);
     }
     pair(rows[0], money(line.total), 7.5);
     for (const extra of rows.slice(1)) { y -= 9; page.drawText(extra, { x: 20, y, size: 7, font: regular, color: ink }); }

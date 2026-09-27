@@ -4,6 +4,22 @@ type SapSession = { cookie: string };
 type SaleLine = { itemCode: string; quantity: number };
 export type PaymentMethod = "cash" | "card" | "mixed";
 type PaymentSelection = { method: PaymentMethod; cashAmount?: number };
+export type InvoiceCustomer = { name: string; taxId: string };
+
+// Nombre y RUC opcionales solo para esta factura: van en el documento (CardName / FederalTaxID)
+// y SAP no modifica el socio de negocio genérico de contado.
+export function normalizeInvoiceCustomer(input?: { name?: unknown; taxId?: unknown } | null): InvoiceCustomer | null {
+  const clean = (value: unknown) => typeof value === "string"
+    ? Array.from(value).filter((ch) => (ch.codePointAt(0) || 0) >= 32).join("").split(" ").filter(Boolean).join(" ")
+    : "";
+  const name = clean(input?.name);
+  const taxId = clean(input?.taxId).split(" ").join("").toUpperCase();
+  if (!name && !taxId) return null;
+  if (!name) throw new Error("Escriba el nombre del cliente para la factura junto con el RUC o cédula.");
+  if (name.length > 100) throw new Error("El nombre del cliente no puede superar 100 caracteres.");
+  if (taxId && !/^[A-Z0-9-]{3,32}$/.test(taxId)) throw new Error("RUC o cédula inválido: use solo letras, números y guiones (máximo 32).");
+  return { name, taxId };
+}
 
 const WRITABLE_COMPANY_DB = "SBO_COMTECH_DEMO";
 const SAP_REQUEST_TIMEOUT_MS = 15_000;
@@ -337,7 +353,7 @@ export async function listSellableItems(limit = 6) {
   })).then((result) => result.filter(Boolean).slice(0, limit));
 }
 
-export async function createInvoice(lines: SaleLine[], existingSession?: SapSession, trace?: OperationTrace) {
+export async function createInvoice(lines: SaleLine[], existingSession?: SapSession, trace?: OperationTrace, customer?: InvoiceCustomer | null) {
   assertValidSaleLines(lines);
   assertDemoWriteTarget();
   const sap = config();
@@ -394,6 +410,8 @@ export async function createInvoice(lines: SaleLine[], existingSession?: SapSess
   }));
   const invoicePayload = {
     CardCode: sap.customer,
+    ...(customer?.name ? { CardName: customer.name } : {}),
+    ...(customer?.taxId ? { FederalTaxID: customer.taxId } : {}),
     DocCurrency: sap.documentCurrency,
     Series: invoiceSeries.series,
     ReserveInvoice: "tYES",
@@ -450,8 +468,9 @@ export async function validateSaleLines(lines: SaleLine[], existingSession?: Sap
   return { valid: true };
 }
 
-export async function createInvoiceAndPayment(lines: SaleLine[], paymentSelection: PaymentSelection, trace?: OperationTrace) {
+export async function createInvoiceAndPayment(lines: SaleLine[], paymentSelection: PaymentSelection, trace?: OperationTrace, customerInput?: { name?: unknown; taxId?: unknown } | null) {
   assertValidSaleLines(lines);
+  const customer = normalizeInvoiceCustomer(customerInput);
   assertDemoWriteTarget();
   if (!paymentSelection || !["cash", "card", "mixed"].includes(paymentSelection.method)) {
     throw new Error("Seleccione contado, tarjeta o ambos como forma de pago.");
@@ -470,7 +489,7 @@ export async function createInvoiceAndPayment(lines: SaleLine[], paymentSelectio
   }
   let invoice: { DocEntry: number; DocNum: number; DocTotal: number; DocCurrency: string };
   try {
-    invoice = await createInvoice(lines, session, trace);
+    invoice = await createInvoice(lines, session, trace, customer);
   } catch (error) {
     if (!trace?.steps.some((step) => step.status === "error")) trace?.step("Factura de reserva", "error", error instanceof Error ? error.message : String(error));
     throw error;
@@ -559,6 +578,7 @@ export type ReceiptData = {
   docDate: string;
   cardCode: string;
   cardName: string;
+  taxId: string;
   currency: string;
   subtotal: number;
   vat: number;
@@ -574,10 +594,10 @@ export async function getReceiptData(invoiceDocEntry: number, paymentDocEntry: n
   const sap = config();
   const session = await login();
   const headers = { Cookie: session.cookie, Accept: "application/json" };
-  const invoiceResponse = await sapFetch(`${sap.baseUrl}/Invoices(${invoiceDocEntry})?$select=DocNum,DocDate,CardCode,CardName,DocCurrency,DocTotal,VatSum,Cancelled,DocumentLines`, { headers, cache: "no-store" });
+  const invoiceResponse = await sapFetch(`${sap.baseUrl}/Invoices(${invoiceDocEntry})?$select=DocNum,DocDate,CardCode,CardName,FederalTaxID,DocCurrency,DocTotal,VatSum,Cancelled,DocumentLines`, { headers, cache: "no-store" });
   if (!invoiceResponse.ok) throw new Error(`No fue posible leer la factura ${invoiceDocEntry} en SAP: ${await errorMessage(invoiceResponse)}`);
   const invoice = await invoiceResponse.json() as {
-    DocNum: number; DocDate: string; CardCode: string; CardName?: string; DocCurrency: string; DocTotal: number; VatSum: number; Cancelled?: string;
+    DocNum: number; DocDate: string; CardCode: string; CardName?: string; FederalTaxID?: string; DocCurrency: string; DocTotal: number; VatSum: number; Cancelled?: string;
     DocumentLines?: Array<{ ItemCode: string; ItemDescription?: string; Quantity: number; LineTotal?: number; TaxTotal?: number }>;
   };
   let payment: ReceiptData["payment"] = null;
@@ -597,6 +617,7 @@ export async function getReceiptData(invoiceDocEntry: number, paymentDocEntry: n
     docDate: invoice.DocDate,
     cardCode: invoice.CardCode,
     cardName: invoice.CardName || "",
+    taxId: invoice.FederalTaxID && invoice.FederalTaxID !== "ND" ? invoice.FederalTaxID : "",
     currency: invoice.DocCurrency,
     subtotal: Math.round((invoice.DocTotal - invoice.VatSum) * 100) / 100,
     vat: invoice.VatSum,

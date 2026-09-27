@@ -1,9 +1,10 @@
-import { createInvoiceAndPayment, getSapIdentity, showroomDate } from "../../../lib/sap";
+import { createInvoiceAndPayment, getSapIdentity, normalizeInvoiceCustomer, showroomDate } from "../../../lib/sap";
 import { OperationTrace, saveOperation, type OperationStatus } from "../../../lib/operations";
 
 type InvoiceBody = {
   lines?: Array<{ itemCode: string; quantity: number; name?: string; price?: number }>;
   payment?: { method?: "cash" | "card" | "mixed"; cashAmount?: number };
+  customer?: { name?: string; taxId?: string };
 };
 
 function identity() {
@@ -15,12 +16,19 @@ export async function POST(request: Request) {
   if (!body.lines?.length) return Response.json({ message: "La factura no contiene artículos" }, { status: 400 });
   if (!body.payment?.method) return Response.json({ message: "Seleccione una forma de pago" }, { status: 400 });
 
+  let customer: ReturnType<typeof normalizeInvoiceCustomer>;
+  try {
+    customer = normalizeInvoiceCustomer(body.customer);
+  } catch (error) {
+    return Response.json({ message: error instanceof Error ? error.message : "Datos del cliente inválidos" }, { status: 400 });
+  }
+
   const trace = new OperationTrace();
   let result: Awaited<ReturnType<typeof createInvoiceAndPayment>> | null = null;
   let failure: string | null = null;
   try {
     const lines = body.lines.map(({ itemCode, quantity }) => ({ itemCode, quantity }));
-    result = await createInvoiceAndPayment(lines, { method: body.payment.method, cashAmount: body.payment.cashAmount }, trace);
+    result = await createInvoiceAndPayment(lines, { method: body.payment.method, cashAmount: body.payment.cashAmount }, trace, customer);
   } catch (error) {
     failure = error instanceof Error ? error.message : "No fue posible crear la factura";
     if (!trace.steps.some((step) => step.status === "error")) trace.step("Operación", "error", failure);

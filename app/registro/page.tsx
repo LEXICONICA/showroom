@@ -91,6 +91,7 @@ export default function Registro() {
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
+  const invoiceCustomer = detail?.pasos.find((step) => step.name === "Factura de reserva")?.request as { CardName?: string; FederalTaxID?: string } | undefined;
   const counts = (rows || []).reduce<Record<string, number>>((acc, row) => ({ ...acc, [row.estado]: (acc[row.estado] || 0) + 1 }), {});
 
   return (
@@ -133,6 +134,7 @@ export default function Registro() {
               <div><dt>Fecha y hora</dt><dd>{fechaHora(detail.createdAt)}</dd></div>
               <div><dt>Factura SAP</dt><dd>{detail.facturaDocNum ?? "-"} <small>DocEntry {detail.facturaDocEntry ?? "-"}</small></dd></div>
               <div><dt>Pago SAP</dt><dd>{detail.pagoDocNum ?? "-"} <small>DocEntry {detail.pagoDocEntry ?? "-"}</small></dd></div>
+              {invoiceCustomer?.CardName ? <div><dt>Factura a nombre de</dt><dd>{invoiceCustomer.CardName}{invoiceCustomer.FederalTaxID ? <small> RUC {invoiceCustomer.FederalTaxID}</small> : null}</dd></div> : null}
               <div><dt>Forma de pago</dt><dd>{detail.metodo ? metodoLabel[detail.metodo] || detail.metodo : "-"}</dd></div>
               <div><dt>Total SAP</dt><dd>{detail.total != null ? money.format(detail.total) : "-"}</dd></div>
               {detail.efectivo ? <div><dt>Efectivo</dt><dd>{money.format(detail.efectivo)}</dd></div> : null}
