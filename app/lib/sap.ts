@@ -49,7 +49,7 @@ function config() {
     priceList: Number(process.env.SAP_PRICE_LIST || 1),
     warehouse: process.env.SAP_DEFAULT_WAREHOUSE,
     documentCurrency: process.env.SAP_DOCUMENT_CURRENCY || "C$",
-    invoiceSeries: Number(process.env.SAP_INVOICE_SERIES || 216),
+    invoiceSeries: process.env.SAP_INVOICE_SERIES ? Number(process.env.SAP_INVOICE_SERIES) : null,
     creditCardCode: Number(process.env.SAP_CREDIT_CARD_CODE || 2),
     creditCardAccount: process.env.SAP_CREDIT_CARD_ACCOUNT || "111-01-005",
     cashAccount: process.env.SAP_CASH_ACCOUNT || "111-01-001",
@@ -89,17 +89,40 @@ async function errorMessage(response: Response) {
   } catch { return `SAP respondió ${response.status}`; }
 }
 
-async function assertReserveInvoiceSeries(session: SapSession) {
+type SapSeries = { Series: number; Name?: string; Locked?: string; NextNumber?: number | null; LastNumber?: number | null };
+type InvoiceSeries = { series: number; name: string; nextNumber: number | null; remaining: number | null; source: "configurada" | "por defecto" };
+
+// Las facturas de reserva usan las series de facturas de clientes (objeto 13). Sin SAP_INVOICE_SERIES se usa
+// la serie por defecto del usuario SAP, así la caja sigue el talonario que asigne el administrador.
+async function resolveInvoiceSeries(session: SapSession): Promise<InvoiceSeries> {
   const sap = config();
-  const response = await sapFetch(`${sap.baseUrl}/SeriesService_GetDocumentSeries`, {
-    method: "POST",
-    headers: { Cookie: session.cookie, "Content-Type": "application/json" },
-    body: JSON.stringify({ DocumentTypeParams: { Document: "13", DocumentSubType: "RI" } }),
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    throw new Error(`SAP no tiene una serie de numeración configurada para Factura de reserva. Créela en Administración → Inicialización del sistema → Numeración de documentos y asígnela a Factura de clientes de reserva. (SAP: ${await errorMessage(response)})`);
+  const headers = { Cookie: session.cookie, "Content-Type": "application/json" };
+  const body = JSON.stringify({ DocumentTypeParams: { Document: "13", DocumentSubType: "--" } });
+  const source = sap.invoiceSeries ? "configurada" : "por defecto";
+  let series: SapSeries | undefined;
+  if (sap.invoiceSeries) {
+    const response = await sapFetch(`${sap.baseUrl}/SeriesService_GetDocumentSeries`, { method: "POST", headers, body, cache: "no-store" });
+    if (!response.ok) throw new Error(`No fue posible consultar las series de factura en SAP: ${await errorMessage(response)}`);
+    const data = await response.json() as SapSeries[] | { value?: SapSeries[] };
+    series = (Array.isArray(data) ? data : data.value || []).find((row) => row.Series === sap.invoiceSeries);
+    if (!series) throw new Error(`La serie ${sap.invoiceSeries} (SAP_INVOICE_SERIES) no existe para facturas de clientes en SAP. Quite SAP_INVOICE_SERIES para usar la serie por defecto del usuario.`);
+  } else {
+    const response = await sapFetch(`${sap.baseUrl}/SeriesService_GetDefaultSeries`, { method: "POST", headers, body, cache: "no-store" });
+    if (!response.ok) throw new Error(`El usuario SAP ${sap.userName} no tiene serie por defecto para facturas de clientes: ${await errorMessage(response)}`);
+    series = await response.json() as SapSeries;
   }
+  const label = `${series.Series} (${series.Name || "sin nombre"})`;
+  if (series.Locked === "tYES") throw new Error(`La serie ${label} está bloqueada en SAP.`);
+  const next = series.NextNumber ?? null;
+  const last = series.LastNumber ?? null;
+  const remaining = next != null && last != null ? last - next + 1 : null;
+  if (remaining != null && remaining <= 0) {
+    const fix = source === "configurada"
+      ? "Quite SAP_INVOICE_SERIES para usar la serie por defecto del usuario, o configure otra serie."
+      : `Asigne en SAP una nueva serie por defecto de factura al usuario ${sap.userName}.`;
+    throw new Error(`La serie ${label} está agotada: último número ${last}. ${fix}`);
+  }
+  return { series: series.Series, name: series.Name || "", nextNumber: next, remaining, source };
 }
 
 async function sapFetch(url: string, init: RequestInit = {}) {
@@ -319,11 +342,14 @@ export async function createInvoice(lines: SaleLine[], existingSession?: SapSess
   assertDemoWriteTarget();
   const sap = config();
   const session = existingSession ?? await login();
+  let invoiceSeries: InvoiceSeries;
   try {
-    await assertReserveInvoiceSeries(session);
-    trace?.step("Serie de factura de reserva", "ok", "SAP tiene serie de numeración para factura de reserva.");
+    invoiceSeries = await resolveInvoiceSeries(session);
+    const left = invoiceSeries.remaining == null ? "sin límite de numeración" : `quedan ${invoiceSeries.remaining} números`;
+    const warning = invoiceSeries.remaining != null && invoiceSeries.remaining <= 20 ? " Quedan pocos números: avise al administrador de SAP." : "";
+    trace?.step("Serie de factura", "ok", `Serie ${invoiceSeries.series} (${invoiceSeries.name}), ${invoiceSeries.source}; próximo número ${invoiceSeries.nextNumber ?? "-"}, ${left}.${warning}`);
   } catch (error) {
-    trace?.step("Serie de factura de reserva", "error", error instanceof Error ? error.message : String(error));
+    trace?.step("Serie de factura", "error", error instanceof Error ? error.message : String(error));
     throw error;
   }
   const documentLines = await Promise.all(lines.map(async (line) => {
@@ -369,7 +395,7 @@ export async function createInvoice(lines: SaleLine[], existingSession?: SapSess
   const invoicePayload = {
     CardCode: sap.customer,
     DocCurrency: sap.documentCurrency,
-    Series: sap.invoiceSeries,
+    Series: invoiceSeries.series,
     ReserveInvoice: "tYES",
     DocumentLines: documentLines,
     Comments: `Factura de reserva · ${getCajaLabel()} Showroom · pago confirmado por POS`,
