@@ -25,6 +25,7 @@ export default function Home() {
   const [mixedCash, setMixedCash] = useState("");
   const [closure, setClosure] = useState<ClosureData | null>(null);
   const [closureError, setClosureError] = useState<string | null>(null);
+  const [cajaLabel, setCajaLabel] = useState("CAJA");
   const input = useRef<HTMLInputElement>(null);
   const printFrame = useRef<HTMLIFrameElement | null>(null);
   const lastSimulatedCode = useRef<string | null>(null);
@@ -32,7 +33,11 @@ export default function Home() {
 
   useEffect(() => { input.current?.focus(); }, [modal]);
   useEffect(() => {
-    const checkSap = () => fetch("/api/sap/status", { cache: "no-store" }).then((r) => setSapState(r.ok ? "online" : "offline")).catch(() => setSapState("offline"));
+    const checkSap = () => fetch("/api/sap/status", { cache: "no-store" }).then(async (r) => {
+      setSapState(r.ok ? "online" : "offline");
+      const status = await r.json() as { cajaLabel?: string };
+      if (status.cajaLabel) setCajaLabel(status.cajaLabel);
+    }).catch(() => setSapState("offline"));
     checkSap();
     const timer = setInterval(checkSap, 15000);
     return () => clearInterval(timer);
@@ -186,7 +191,7 @@ export default function Home() {
   return (
     <main>
       <header>
-        <div className="brand"><span className="brand-logo-wrap"><img src="/brand/comtech-logo.jpg" alt="COMTECH" /></span><div><strong>COMTECH</strong><small>SHOWROOM · CAJA 01</small></div></div>
+        <div className="brand"><span className="brand-logo-wrap"><img src="/brand/comtech-logo.jpg" alt="COMTECH" /></span><div><strong>COMTECH</strong><small>SHOWROOM · {cajaLabel}</small></div></div>
         <div className="header-right"><span className={`status ${sapState === "offline" ? "offline" : ""}`}><i /> {sapState === "online" ? "SAP conectado" : sapState === "offline" ? "SAP sin acceso" : "Verificando SAP"}</span><button className="closure-trigger" onClick={openClosure}>Cierre de caja</button><button className="help" onClick={() => { setNotice("Escanea un producto; luego cobra, imprime y entrega."); input.current?.focus(); }}>? Ayuda</button></div>
       </header>
 
@@ -218,7 +223,7 @@ export default function Home() {
         </div>
 
         <aside>
-          <div><p className="eyebrow">CAJA 01</p><h2>Resumen de venta</h2></div>
+          <div><p className="eyebrow">{cajaLabel}</p><h2>Resumen de venta</h2></div>
           <div className="summary-lines"><p><span>Subtotal</span><b>{money.format(total / 1.15)}</b></p><p><span>IVA (15%)</span><b>{money.format(total - total / 1.15)}</b></p></div>
           <div className="grand"><span>Total a pagar</span><b>{money.format(total)}</b><small>Tasa vigente de SAP</small></div>
           <button className="pay" disabled={!lines.length || lines.some((line) => !line.itemCode)} onClick={() => { setPaymentError(null); setModal("pay"); }}><span>Cobrar venta</span><i>→</i></button>
@@ -246,7 +251,7 @@ export default function Home() {
         </>}
         {modal === "processing" && <><div className={paymentError ? "process-error" : "spinner"}>{paymentError ? "!" : ""}</div><p className="eyebrow center">{paymentError ? "OPERACIÓN INCOMPLETA" : "PROCESANDO VENTA"}</p><h2>{paymentError ? "SAP requiere atención" : "Espera la confirmación"}</h2>{paymentError ? <><p className="muted">{paymentError}</p><button className="secondary-print" onClick={() => invoice ? reset() : setModal("pay")}>{invoice ? "Cerrar sin duplicar factura" : "Volver y revisar"}</button>{!invoice && <button className="cancel-modal" onClick={reset}>Cancelar venta</button>}</> : <div className="progress-list">{["Validando productos", "Creando factura de reserva en SAP", "Registrando el medio de pago", "Confirmando la operación"].map((label, i) => <p className={step > i ? "done" : step === i ? "active" : ""} key={label}><i>{step > i ? "✓" : i + 1}</i><span>{label}</span></p>)}</div>}</>}
         {modal === "done" && <><div className="success">✓</div><p className="eyebrow center">VENTA COMPLETADA</p><h2>Pago registrado</h2><div className="pos-voucher"><div><b>FORMA DE PAGO</b><span>{paymentMethod === "cash" ? "CONTADO" : paymentMethod === "card" ? "TARJETA" : "AMBOS"}</span></div><p><span>PAGO SAP {payment?.DocNum || "-"}</span><strong>{money.format(total)}</strong></p><small>REGISTRADO EN SBO_COMTECH_DEMO</small></div><div className="receipt"><span>Factura de reserva SAP · SHOWROOM</span><b>{invoice?.DocNum ? `SAP-${invoice.DocNum}` : "FACTURA DE RESERVA"}</b><small>{printed ? "Factura enviada a impresión" : "Pendiente de imprimir y entregar"}</small></div><button className="pay print-action" onClick={() => printReceiptPdf()}><span>{printed ? "Imprimir nuevamente" : "Imprimir factura"}</span><i>▣</i></button><p className="handoff-note">{printed ? "Entrega la factura y los productos al cliente." : "Imprime la factura antes de entregar los productos."}</p><button className="link" onClick={reset}>Iniciar nueva venta</button></>}
-        {modal === "closure" && <><button className="modal-x" onClick={() => setModal(null)} aria-label="Cerrar cierre de caja">×</button><p className="eyebrow center">CAJA 01 · HOY</p><h2>Cierre de caja</h2>{closureError ? <p className="payment-inline-error" role="alert">{closureError}</p> : !closure ? <div className="closure-loading"><div className="spinner" /><span>Consultando pagos en SAP…</span></div> : <><div className="closure-totals"><div><span>Contado</span><b>{money.format(closure.totals.cash)}</b></div><div><span>Tarjeta</span><b>{money.format(closure.totals.card)}</b></div><div className="closure-grand"><span>Total vendido</span><b>{money.format(closure.totals.total)}</b></div></div><div className="closure-meta"><span>{closure.entries.length} facturas</span><span>{closure.date}</span></div><div className="closure-list">{closure.entries.length ? closure.entries.map((entry) => <div key={entry.paymentDocNum}><span><b>Factura {entry.invoiceDocNum || "-"}</b><small>Pago SAP {entry.paymentDocNum} · {entry.method === "cash" ? "Contado" : entry.method === "card" ? "Tarjeta" : "Ambos"}</small></span><strong>{money.format(entry.total)}</strong></div>) : <p>No hay ventas registradas hoy en Caja 01.</p>}</div></>}<button className="link" onClick={() => setModal(null)}>Volver a la caja</button></>}
+        {modal === "closure" && <><button className="modal-x" onClick={() => setModal(null)} aria-label="Cerrar cierre de caja">×</button><p className="eyebrow center">{cajaLabel} · HOY</p><h2>Cierre de caja</h2>{closureError ? <p className="payment-inline-error" role="alert">{closureError}</p> : !closure ? <div className="closure-loading"><div className="spinner" /><span>Consultando pagos en SAP…</span></div> : <><div className="closure-totals"><div><span>Contado</span><b>{money.format(closure.totals.cash)}</b></div><div><span>Tarjeta</span><b>{money.format(closure.totals.card)}</b></div><div className="closure-grand"><span>Total vendido</span><b>{money.format(closure.totals.total)}</b></div></div><div className="closure-meta"><span>{closure.entries.length} facturas</span><span>{closure.date}</span></div><div className="closure-list">{closure.entries.length ? closure.entries.map((entry) => <div key={entry.paymentDocNum}><span><b>Factura {entry.invoiceDocNum || "-"}</b><small>Pago SAP {entry.paymentDocNum} · {entry.method === "cash" ? "Contado" : entry.method === "card" ? "Tarjeta" : "Ambos"}</small></span><strong>{money.format(entry.total)}</strong></div>) : <p>No hay ventas registradas hoy en {cajaLabel}.</p>}</div></>}<button className="link" onClick={() => setModal(null)}>Volver a la caja</button></>}
       </div></div>}
 
       <iframe ref={printFrame} className="print-frame" title="Impresión automática del recibo" />
@@ -260,7 +265,7 @@ export default function Home() {
         <div className="thermal-rule" />
         <div className="thermal-pair"><span>FACTURA RESERVA</span><b>{invoice?.DocNum ? `SAP-${invoice.DocNum}` : "FACTURA SAP"}</b></div>
         <div className="thermal-pair"><span>FECHA</span><span>03/08/2026 10:42 AM</span></div>
-        <div className="thermal-pair"><span>CAJA</span><span>CAJA 01</span></div>
+        <div className="thermal-pair"><span>CAJA</span><span>{cajaLabel}</span></div>
         <div className="thermal-pair"><span>CLIENTE</span><span>CN999999</span></div>
         <div className="thermal-rule" />
         <div className="thermal-head"><span>CANT. DESCRIPCIÓN</span><span>TOTAL</span></div>

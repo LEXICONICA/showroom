@@ -1,4 +1,5 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { getCajaLabel } from "../../../lib/sap";
 
 type ReceiptLine = { code: string; name: string; qty: number; price: number };
 const cash = (value: number) => `C$ ${value.toFixed(2)}`;
@@ -25,7 +26,7 @@ export async function POST(request: Request) {
   page.drawRectangle({ x: 83, y: y - 2, width: 26, height: 12, color: rgb(.95, .04, .08) });
   page.drawRectangle({ x: 112, y: y + 8, width: 32, height: 12, color: rgb(.95, .04, .08) });
   y -= 18; center("COMTECH", 18, bold); y -= 14; center("SHOWROOM - CAJA RAPIDA", 8, bold); y -= 11; center("Managua, Nicaragua", 7); y -= 14; rule();
-  pair("FACTURA RESERVA", body.invoice || "FAC-00018472", 8, bold); y -= 11; pair("CLIENTE", "CN999999"); y -= 11; pair("CAJA", "CAJA 01"); y -= 14; rule();
+  pair("FACTURA RESERVA", body.invoice || "FAC-00018472", 8, bold); y -= 11; pair("CLIENTE", "CN999999"); y -= 11; pair("CAJA", getCajaLabel()); y -= 14; rule();
   pair("CANT. DESCRIPCION", "TOTAL", 7, bold); y -= 13;
   const subtotal = body.lines.reduce((sum, line) => sum + line.price * line.qty, 0) / 1.15;
   for (const line of body.lines) {

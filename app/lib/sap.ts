@@ -54,7 +54,20 @@ function config() {
     paymentMethodCode: Number(process.env.SAP_PAYMENT_METHOD_CODE || 1),
     taxCode: process.env.SAP_TAX_CODE || "IVA",
     taxRate: Number(process.env.SAP_TAX_RATE || 0.15),
+    cajaId: getCajaId(),
   };
+}
+
+// Identifica la caja en los pagos de SAP (Remarks y comprobante); el cierre de caja filtra por este valor.
+export function getCajaId() {
+  const value = (process.env.CAJA_ID || "CAJA01").trim().toUpperCase();
+  if (!/^[A-Z0-9]{1,12}$/.test(value)) throw new Error("CAJA_ID inválido: use solo letras y números, por ejemplo CAJA02.");
+  return value;
+}
+
+// "CAJA02" -> "CAJA 02" para pantalla y recibo.
+export function getCajaLabel() {
+  return getCajaId().replace(/^CAJA(\d+)$/, "CAJA $1");
 }
 
 function assertDemoWriteTarget() {
@@ -123,6 +136,8 @@ export async function getSapRuntimeStatus() {
     companyDb: sap.companyDb,
     writeEnabled: process.env.SAP_ENABLE_POSTING === "true" && sap.companyDb === WRITABLE_COMPANY_DB,
     documentType: "AR_RESERVE_INVOICE",
+    cajaId: sap.cajaId,
+    cajaLabel: getCajaLabel(),
   };
 }
 
@@ -140,9 +155,10 @@ async function loginFresh(): Promise<SapSession> {
   return { cookie: `B1SESSION=${data.SessionId}` };
 }
 
+// Tasa oficial de SAP (tabla ORTT) para la fecha del showroom, no la fecha UTC del servidor.
 async function getSapCurrencyRate(currency: string, session: SapSession) {
-  if (!currency || currency === "NIO") return 1;
-  const cacheKey = `${new Date().toISOString().slice(0, 10)}:${currency}`;
+  if (!currency || currency === "NIO" || currency === config().documentCurrency) return 1;
+  const cacheKey = `${showroomDate()}:${currency}`;
   const pending = currencyRateRequests.get(cacheKey);
   if (pending) return pending;
 
@@ -158,7 +174,7 @@ async function getSapCurrencyRate(currency: string, session: SapSession) {
 
 async function fetchSapCurrencyRate(currency: string, session: SapSession) {
   const sap = config();
-  const date = new Date().toISOString().slice(0, 10);
+  const date = showroomDate();
   const response = await sapFetch(`${sap.baseUrl}/SBOBobService_GetCurrencyRate`, {
     method: "POST",
     headers: { Cookie: session.cookie, "Content-Type": "application/json" },
@@ -351,7 +367,7 @@ export async function createInvoice(lines: SaleLine[], existingSession?: SapSess
       Series: sap.invoiceSeries,
       ReserveInvoice: "tYES",
       DocumentLines: documentLines,
-      Comments: "Factura de reserva · Caja 01 Showroom · pago confirmado por POS",
+      Comments: `Factura de reserva · ${getCajaLabel()} Showroom · pago confirmado por POS`,
     }),
   });
   if (!response.ok) throw new Error(await errorMessage(response));
@@ -405,7 +421,7 @@ export async function createInvoiceAndPayment(lines: SaleLine[], paymentSelectio
   const invoice = await createInvoice(lines, session) as { DocEntry: number; DocNum: number; DocTotal: number; DocCurrency: string };
   const invoiceSummary = { DocEntry: invoice.DocEntry, DocNum: invoice.DocNum, DocTotal: invoice.DocTotal, DocCurrency: invoice.DocCurrency };
   const today = showroomDate();
-  const voucher = `CAJA01-${invoice.DocNum}`;
+  const voucher = `${sap.cajaId}-${invoice.DocNum}`;
   const cashAmount = paymentSelection.method === "cash"
     ? invoice.DocTotal
     : paymentSelection.method === "mixed"
@@ -431,7 +447,7 @@ export async function createInvoiceAndPayment(lines: SaleLine[], paymentSelectio
       DocType: "rCustomer",
       CardCode: sap.customer,
       DocCurrency: sap.documentCurrency,
-      Remarks: `CAJA01|${methodCode}|INV:${invoice.DocNum}`,
+      Remarks: `${sap.cajaId}|${methodCode}|INV:${invoice.DocNum}`,
       PaymentInvoices: [{ DocEntry: invoice.DocEntry, InvoiceType: "it_Invoice", SumApplied: invoice.DocTotal }],
       ...(cashAmount > 0 ? { CashAccount: sap.cashAccount, CashSum: cashAmount } : {}),
       ...(paymentCreditCards ? { PaymentCreditCards: paymentCreditCards } : {}),
@@ -454,7 +470,7 @@ export async function getCashClosure(date = showroomDate()) {
   const response = await sapFetch(`${sap.baseUrl}/IncomingPayments?${query}`, { headers: { Cookie: session.cookie, Accept: "application/json" }, cache: "no-store" });
   if (!response.ok) throw new Error(await errorMessage(response));
   const data = await response.json() as { value?: Array<{ DocEntry: number; DocNum: number; DocDate: string; CashSum?: number; Remarks?: string; Cancelled?: string; PaymentCreditCards?: Array<{ CreditSum?: number }> }> };
-  const entries = (data.value || []).filter((row) => row.Remarks?.startsWith("CAJA01|") && row.Cancelled !== "tYES").map((row) => {
+  const entries = (data.value || []).filter((row) => row.Remarks?.startsWith(`${sap.cajaId}|`) && row.Cancelled !== "tYES").map((row) => {
     const [, methodCode, invoiceMarker] = (row.Remarks || "").split("|");
     const cash = Number(row.CashSum || 0);
     const card = (row.PaymentCreditCards || []).reduce((sum, item) => sum + Number(item.CreditSum || 0), 0);
@@ -463,6 +479,7 @@ export async function getCashClosure(date = showroomDate()) {
   return {
     date,
     companyDb: sap.companyDb,
+    cajaId: sap.cajaId,
     entries,
     totals: entries.reduce((sum, row) => ({ cash: sum.cash + row.cash, card: sum.card + row.card, total: sum.total + row.total }), { cash: 0, card: 0, total: 0 }),
   };
