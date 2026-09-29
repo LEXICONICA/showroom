@@ -42,3 +42,4 @@ next-env.d.ts
 /work/
 /dev-output.log
 /dev-error.log
+/logs/
