@@ -47,14 +47,14 @@ La interfaz toma como referencia una caja de supermercado empresarial: lectura i
 - **Mercado e idioma:** operación COMTECH en Managua; interfaz en español de Nicaragua y moneda NIO.
 - **Escena de uso:** computadora de caja, uso continuo, lector de código de barras, POS e impresora térmica.
 - **Registro:** producto interno; la claridad operativa tiene prioridad sobre mensajes promocionales.
-- **Firma memorable:** la franja oscura del lector funciona como estación activa de escaneo.
+- **Firma memorable:** la barra blanca del lector, con borde y botón rojo COMTECH, funciona como estación activa de escaneo.
 - **Restricción:** los pasos de pago, impresión y entrega nunca deben quedar implícitos ni reiniciarse por tiempo.
 - **Anti-referencias:** no debe parecer autoservicio, tienda en línea ni landing page.
 - **Propiedad de tokens:** este documento refleja las variables y reglas canónicas de `app/globals.css`; cualquier cambio durable debe actualizar ambos archivos.
 
 ## Colors
 
-El rojo COMTECH identifica acciones primarias y marca; no se usa para estados exitosos. Verde indica éxito, azul el foco de teclado, y rojo oscuro los errores. Las superficies claras sostienen listas y resumen sin competir con el lector.
+El rojo COMTECH identifica acciones primarias y marca; no se usa para estados exitosos. Verde indica éxito, azul el foco de teclado, y rojo oscuro los errores. Toda la interfaz usa superficies claras (encabezado, lector, resumen y diálogos); no hay bloques oscuros. El rojo se limita a acentos y acciones.
 
 ## Typography
 
@@ -66,7 +66,7 @@ En escritorio, productos y escaneo ocupan el panel principal; el resumen y cobro
 
 ## Elevation & Depth
 
-La jerarquía usa contraste tonal, bordes y sombras discretas. Los diálogos de pago pueden elevarse sobre una capa oscura; las filas de producto no deben parecer tarjetas promocionales.
+La jerarquía usa contraste tonal, bordes y sombras discretas. Los diálogos de pago se elevan sobre una capa translúcida suave; las filas de producto no deben parecer tarjetas promocionales.
 
 ## Shapes
 

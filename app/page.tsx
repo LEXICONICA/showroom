@@ -210,14 +210,14 @@ export default function Home() {
   return (
     <main>
       <header>
-        <div className="brand"><span className="brand-logo-wrap"><img src="/brand/comtech-logo.jpg" alt="COMTECH" /></span><div><strong>COMTECH</strong><small>SHOWROOM · {cajaLabel}</small></div></div>
-        <div className="header-right"><span className={`status ${sapState === "offline" ? "offline" : ""}`}><i /> {sapState === "online" ? "SAP conectado" : sapState === "offline" ? "SAP sin acceso" : "Verificando SAP"}</span><a className="closure-trigger" href="/registro" target="_blank" rel="noopener">Registro</a><button className="closure-trigger" onClick={openClosure}>Cierre de caja</button><button className="help" onClick={() => { setNotice("Escanea un producto; luego cobra, imprime y entrega."); input.current?.focus(); }}>? Ayuda</button></div>
+        <div className="brand"><span className="brand-logo-wrap"><img src="/brand/comtech-logo.jpg" alt="COMTECH" /></span><div><strong>COMTECH</strong></div></div>
+        <div className="header-right"><span className={`status ${sapState === "offline" ? "offline" : ""}`}><i /> {sapState === "online" ? "SAP conectado" : sapState === "offline" ? "SAP sin acceso" : "Verificando SAP"}</span><a className="closure-trigger" href="/registro" target="_blank" rel="noopener">Registro</a><button className="closure-trigger" onClick={openClosure}>Cierre de caja</button></div>
       </header>
 
       <section className="workspace">
         <div className="sale">
           <div className="sale-head">
-            <div><p className="eyebrow">PUNTO DE VENTA</p><h1>Venta en caja.</h1><p>Escanea los productos, cobra y entrega la factura al cliente.</p></div>
+            <div><p className="eyebrow">PUNTO DE VENTA</p><p>Escanea los productos, cobra y entrega la factura al cliente.</p></div>
             <div className="customer"><span>◆</span><div><small>CLIENTE DE MOSTRADOR</small><b>Contado Showroom</b><em>CN999999 · Precio SAP</em></div></div>
           </div>
 
@@ -242,13 +242,13 @@ export default function Home() {
         </div>
 
         <aside>
-          <div><p className="eyebrow">{cajaLabel}</p><h2>Resumen de venta</h2></div>
+          <div><h2>Resumen de venta</h2></div>
           <div className="summary-lines"><p><span>Subtotal</span><b>{money.format(total / 1.15)}</b></p><p><span>IVA (15%)</span><b>{money.format(total - total / 1.15)}</b></p></div>
           <div className="grand"><span>Total a pagar</span><b>{money.format(total)}</b><small>Tasa vigente de SAP</small></div>
           <button className="pay" disabled={!lines.length || lines.some((line) => !line.itemCode)} onClick={() => { setPaymentError(null); setModal("pay"); }}><span>Cobrar venta</span><i>→</i></button>
           <div className="card-only"><span>▣</span><p><b>Contado, tarjeta o ambos</b><small>La tarjeta se procesa en el POS físico</small></p></div>
           <button className="cancel-purchase" disabled={!lines.length} onClick={reset}>Cancelar venta</button>
-          <div className="aside-foot"><span>🔒 Transacción segura</span><span>● Cajera en línea</span></div>
+          <div className="aside-foot"><span>🔒 Transacción segura</span></div>
         </aside>
       </section>
 
